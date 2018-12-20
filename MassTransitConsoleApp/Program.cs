@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using MassTransit;
+using MassTransit.ExtensionsDependencyInjectionIntegration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -11,118 +13,71 @@ namespace MassTransitConsoleApp
 	{
 		static void Main(string[] args)
 		{
-			if (args == null)
-			{
-
-			}
-			DemoMassTransitConfigurationA();
-			DemoMassTransitConfigurationB();
+			DemoMassTransit<IMessageA, MessageAConsumer>(nameof(IMessageA), new MessageA());
+			DemoMassTransit<IMessageB, MessageBConsumer>(nameof(IMessageB), new MessageB());
 		}
 
-		private static void DemoMassTransitConfigurationB()
+		private static void DemoMassTransit<TMessage, TMessageConsumer>(string uniqueQueueName, TMessage message)
+			where TMessage : class
+			where TMessageConsumer : class, IConsumer<TMessage>
 		{
-			var configurationRoot = BuildInMemoryConfiguration("ConfigurationB");
-			var serviceProvider = BuildMassTransitServiceProviderForTestQueueB(configurationRoot);
+			var configurationRoot = BuildInMemoryConfiguration(uniqueQueueName);
+			var serviceProvider = BuildMassTransitServiceProvider<TMessage, TMessageConsumer>(configurationRoot);
+			var logger = serviceProvider.GetService<ILoggerFactory>().CreateLogger<Program>();
+
 			var serviceScopeFactory = serviceProvider.GetService<IServiceScopeFactory>();
-			var logger = GetLogger(serviceProvider);
-			IBusControl busControlScope2;
 			using (var serviceScope2 = serviceScopeFactory.CreateScope())
 			{
-				logger.LogInformation("==========scope2=========");
-				busControlScope2 = serviceScope2.ServiceProvider.GetService<IBusControl>();
-				busControlScope2.Start();
-				busControlScope2.Publish<IMessageB>(new { Value = "Hi MessageA" });
+				var busControl = serviceScope2.ServiceProvider.GetService<IBusControl>();
+				busControl.Start();
+				busControl.Publish<TMessage>(message);
+				logger.LogInformation($"Published {message}");
+				Console.ReadKey();
+				busControl.Stop();
 			}
-
-			logger.LogInformation("Press any key to stop scope2 bus");
-			Console.ReadKey();
-			busControlScope2.Stop();
 		}
 
-		private static void DemoMassTransitConfigurationA()
+		private static ServiceProvider BuildMassTransitServiceProvider<TMessage, TMessageConsumer>(IConfigurationRoot configurationRoot)
+			where TMessage : class
+			where TMessageConsumer : class, IConsumer<TMessage>
 		{
-			var configurationRoot = BuildInMemoryConfiguration("ConfigurationA");
-			var serviceProvider = BuildMassTransitServiceProviderForTestQueueA(configurationRoot);
-			var serviceScopeFactory = serviceProvider.GetService<IServiceScopeFactory>();
-			var logger = GetLogger(serviceProvider);
-			IBusControl busControlScope1;
-			using (var serviceScope1 = serviceScopeFactory.CreateScope())
+			var services = new ServiceCollection()
+				.AddLogging(configure =>
+				{
+					configure.AddConfiguration(configurationRoot.GetSection("Logging"));
+					configure.AddConsole();
+				});
+
+			services.AddScoped<TMessageConsumer>();
+
+			services.AddMassTransit(x =>
 			{
-				logger.LogInformation("==========scope1=========");
-				busControlScope1 = serviceScope1.ServiceProvider.GetService<IBusControl>();
-				busControlScope1.Start();
-				busControlScope1.Publish<IMessageA>(new { Value = "Hi MessageB" });
-			}
+				x.AddConsumer<TMessageConsumer>();
+			});
 
-			logger.LogInformation("Press any key to stop scope1 bus");
-			Console.ReadKey();
-			busControlScope1.Stop();
-		}
-
-		private static ILogger<Program> GetLogger(ServiceProvider serviceProvider)
-		{
-			var logger = serviceProvider.GetService<ILoggerFactory>()
-				.CreateLogger<Program>();
-			return logger;
-		}
-
-		private static ServiceProvider BuildMassTransitServiceProviderForTestQueueA(IConfigurationRoot configurationRoot)
-		{
-			return new ServiceCollection()
-				.AddLogging(configure =>
+			services.AddScoped<IBusControl>(provider => Bus.Factory.CreateUsingRabbitMq(cfg =>
+			{
+				var host = cfg.Host(new Uri("rabbitmq://localhost"), h =>
 				{
-					configure.AddConfiguration(configurationRoot.GetSection("Logging"));
-					configure.AddConsole();
-				})
-				.AddScoped<IBusControl>(provider => Bus.Factory.CreateUsingRabbitMq(cfg =>
+					h.Username("guest");
+					h.Password("guest");
+				});
+
+				string uniqueQueueName =
+					configurationRoot.GetValue<string>("MassTransit:UniqueQueueName", "test_queue_b");
+				cfg.ReceiveEndpoint(host, uniqueQueueName, ep =>
 				{
-					var host = cfg.Host(new Uri("rabbitmq://localhost"), h =>
-					{
-						h.Username("guest");
-						h.Password("guest");
-					});
+					ep.ConsumerPriority = 2;
+					ep.LoadFrom(provider);
+					EndpointConvention.Map<TMessage>(ep.InputAddress);
+				});
 
-					string uniqueQueueName = configurationRoot.GetValue<string>("MassTransit:UniqueQueueName");
-					cfg.ReceiveEndpoint(host, uniqueQueueName, ep =>
-					{
-						ep.ConsumerPriority = 1;
-						ep.Handler<IMessageA>(context => Console.Out.WriteLineAsync($"{uniqueQueueName}: {context.Message.Value}"));
-					});
+				cfg.UseExtensionsLogging(new LoggerFactory());
+				cfg.UseExtensionsLogging(provider.GetRequiredService<ILoggerFactory>());
+			}))
+			.AddScoped<IBus>(provider => provider.GetRequiredService<IBusControl>());
 
-					cfg.UseExtensionsLogging(new LoggerFactory());
-					cfg.UseExtensionsLogging(provider.GetRequiredService<ILoggerFactory>());
-				}))
-				.AddScoped<IBus>(provider => provider.GetRequiredService<IBusControl>())
-				.BuildServiceProvider();
-		}
-
-		private static ServiceProvider BuildMassTransitServiceProviderForTestQueueB(IConfigurationRoot configurationRoot)
-		{
-			return new ServiceCollection()
-				.AddLogging(configure =>
-				{
-					configure.AddConfiguration(configurationRoot.GetSection("Logging"));
-					configure.AddConsole();
-				})
-				.AddScoped<IBusControl>(provider => Bus.Factory.CreateUsingRabbitMq(cfg =>
-				{
-					var host = cfg.Host(new Uri("rabbitmq://localhost"), h =>
-					{
-						h.Username("guest");
-						h.Password("guest");
-					});
-
-					cfg.ReceiveEndpoint(host, "test_queue_b", ep =>
-					{
-						ep.ConsumerPriority = 2;
-						ep.Handler<IMessageB>(context => Console.Out.WriteLineAsync($"Received via test_queue_b: {context.Message.Value}"));
-					});
-
-					cfg.UseExtensionsLogging(new LoggerFactory());
-					cfg.UseExtensionsLogging(provider.GetRequiredService<ILoggerFactory>());
-				}))
-				.AddScoped<IBus>(provider => provider.GetRequiredService<IBusControl>())
-				.BuildServiceProvider();
+			return services.BuildServiceProvider();
 		}
 
 		private static IConfigurationRoot BuildInMemoryConfiguration(string uniqueQueueName)
@@ -139,6 +94,48 @@ namespace MassTransitConsoleApp
 		}
 	}
 
-	public interface IMessageA { string Value { get; } }
-	public interface IMessageB { string Value { get; } }
+	public interface IMessageA
+	{
+		string Value { get; }
+	}
+	public interface IMessageB
+	{
+		string Value { get; }
+	}
+
+	public class MessageA : IMessageA
+	{
+		public string Value { get; set; } = DateTime.Now.ToLongTimeString();
+		public override string ToString()
+		{
+			return Value;
+		}
+	}
+
+	public class MessageB : IMessageB
+	{
+		public string Value { get; set; } = DateTime.Now.ToLongTimeString();
+		public override string ToString()
+		{
+			return Value;
+		}
+	}
+
+	public class MessageAConsumer : IConsumer<IMessageA>
+	{
+		public Task Consume(ConsumeContext<IMessageA> context)
+		{
+			Console.Out.WriteLine($"Received MessageA: {context.Message.Value}");
+			return Task.CompletedTask;
+		}
+	}
+
+	public class MessageBConsumer : IConsumer<IMessageB>
+	{
+		public Task Consume(ConsumeContext<IMessageB> context)
+		{
+			Console.Out.WriteLine($"Received MessageB: {context.Message.Value}");
+			return Task.CompletedTask;
+		}
+	}
 }
