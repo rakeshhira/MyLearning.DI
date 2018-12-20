@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,48 +7,11 @@ using Microsoft.Extensions.Logging;
 
 namespace ConsoleApp
 {
-	class Program
+	public static class DiHelper
 	{
-		static void Main(string[] args)
+		public static ILogger<TCategory> GetLogger<TCategory>(ServiceProvider serviceProvider)
 		{
-			var configurationRoot = BuildInMemoryConfiguration();
-			var serviceProvider = BuildServiceProvider(configurationRoot);
-			var logger = GetLogger(serviceProvider);
-
-			var singletonMsg = new StringBuilder();
-			var transientMsg = new StringBuilder();
-			var scopedMsg = new StringBuilder();
-			var serviceScopeFactory = serviceProvider.GetService<IServiceScopeFactory>();
-			using (var serviceScope = serviceScopeFactory.CreateScope())
-			{
-				for (int i = 0; i < 2; i++)
-				{
-					var singleton = serviceProvider.GetService<IServiceSingleton>();
-					var transient = serviceProvider.GetService<IServiceTransient>();
-					var scoped = serviceScope.ServiceProvider.GetService<IServiceScoped>();
-
-					singletonMsg.AppendLine($"{i} {singleton}");
-					transientMsg.AppendLine($"{i} {transient}");
-					scopedMsg.AppendLine($"{i} {scoped}");
-				}
-			}
-
-			logger.LogInformation("Built in service provider!");
-
-			logger.LogInformation($"singleton{Environment.NewLine}{singletonMsg.ToString()}");
-			logger.LogInformation($"transient{Environment.NewLine}{transientMsg.ToString()}");
-			logger.LogInformation($"scoped{Environment.NewLine}{scopedMsg.ToString()}");
-
-
-			logger.LogInformation("Press any key to quit");
-			Console.ReadKey();
-		}
-
-		private static ILogger<Program> GetLogger(ServiceProvider serviceProvider)
-		{
-			var logger = serviceProvider.GetService<ILoggerFactory>()
-				.CreateLogger<Program>();
-			return logger;
+			return serviceProvider.GetService<ILoggerFactory>().CreateLogger<TCategory>();
 		}
 
 		private static ServiceProvider BuildServiceProvider(IConfigurationRoot configurationRoot)
@@ -81,15 +43,15 @@ namespace ConsoleApp
 		}
 	}
 
-	interface IServiceBase
+	interface IService
 	{
 		DateTime CreateTime { get; }
 		Guid Id { get; }
 	}
 
-	interface IServiceSingleton : IServiceBase { }
-	interface IServiceTransient : IServiceBase { }
-	interface IServiceScoped : IServiceBase { }
+	interface IServiceSingleton : IService { }
+	interface IServiceTransient : IService { }
+	interface IServiceScoped : IService { }
 
 	class ServiceScoped : ServiceBase, IServiceScoped
 	{
@@ -130,7 +92,7 @@ namespace ConsoleApp
 		}
 	}
 
-	class ServiceBase : IServiceBase
+	class ServiceBase : IService
 	{
 		private static readonly Func<ILogger, IDisposable> BeginScopeCtorLogger;
 		private static readonly Action<ILogger, DateTime, Guid, Exception> LogDump;
